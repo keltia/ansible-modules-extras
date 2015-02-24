@@ -37,7 +37,7 @@ options:
     state:
         description:
             - state of the package
-        choices: [ 'present', 'absent' ]
+        choices: [ 'present', 'absent', 'latest' ]
         required: false
         default: present
     cached:
@@ -94,6 +94,24 @@ def query_package(module, pkgng_path, name):
         return True
 
     return False
+
+
+def outofdate_packages(module, pkgng_path, pkgsite):
+
+    old_pkgng = pkgng_older_than(module, pkgng_path, [1, 1, 4])
+    if old_pkgng:
+        rc, out, err = module.run_command("%s %s version -l '<'" % (pkgsite, pkgng_path))
+    else:
+        rc, out, err = module.run_command("%s version -l '<'" % (pkgng_path))
+    if rc != 0:
+        module.fail_json(msg="Could not update catalogue")
+
+    if rc == 0:
+        obsolete = map(lambda x: str(re.split(r'\s+', x)[0]), re.split(r'\n', out))
+        return obsolete
+    else:
+        return None
+
 
 def pkgng_older_than(module, pkgng_path, compare_version):
 
@@ -180,6 +198,65 @@ def install_packages(module, pkgng_path, packages, cached, pkgsite):
 
     return (False, "package(s) already present")
 
+
+def pkg_basename(module, pkgng_path, package):
+
+    rc, out, err = module.run_command("%s query '%%n' %s" % (pkgng_path, package))
+    if rc != 0:
+        module.fail_json(msg="Could not run query port")
+    if rc == 0:
+        return out
+    else:
+        return None
+
+
+# XXX packages is ignored as pkg version/upgrade do not deal with indiv. packages
+def update_packages(module, pkgng_path, packages, cached, pkgsite):
+
+    upgrade_c = 0
+
+    # as of pkg-1.1.4, PACKAGESITE is deprecated in favor of repository definitions
+    # in /usr/local/etc/pkg/repos
+    old_pkgng = pkgng_older_than(module, pkgng_path, [1, 1, 4])
+    if pkgsite != "":
+        if old_pkgng:
+            pkgsite = "PACKAGESITE=%s" % (pkgsite)
+        else:
+            pkgsite = "-r %s" % (pkgsite)
+
+    batch_var = 'env BATCH=yes' # This environment variable skips mid-install prompts,
+                                # setting them to their default values.
+
+    if not module.check_mode and not cached:
+        if old_pkgng:
+            rc, out, err = module.run_command("%s %s update" % (pkgsite, pkgng_path))
+        else:
+            rc, out, err = module.run_command("%s update" % (pkgng_path))
+        if rc != 0:
+            module.fail_json(msg="Could not update catalogue")
+
+    # Get list of obsolete packages
+    packages = outofdate_packages(module, pkgng_path, pkgsite)
+
+    for package in packages:
+        package = pkg_basename(package)
+        if not module.check_mode:
+            if old_pkgng:
+                rc, out, err = module.run_command("%s %s %s install -g -U -y %s" % (batch_var, pkgsite, pkgng_path, package))
+            else:
+                rc, out, err = module.run_command("%s %s install %s -g -U -y %s" % (batch_var, pkgng_path, pkgsite, package))
+
+        if not module.check_mode and not query_package(module, pkgng_path, package):
+            module.fail_json(msg="failed to upgrade %s: %s" % (package, out), stderr=err)
+
+        upgrade_c += 1
+
+    if upgrade_c > 0:
+        return (True, "updated %s package(s)" % (upgrade_c))
+
+    return (True, "package(s) already up-to-date")
+
+
 def annotation_query(module, pkgng_path, package, tag):
     rc, out, err = module.run_command("%s info -g -A %s" % (pkgng_path, package))
     match = re.search(r'^\s*(?P<tag>%s)\s*:\s*(?P<value>\w+)' % tag, out, flags=re.MULTILINE)
@@ -263,7 +340,7 @@ def annotate_packages(module, pkgng_path, packages, annotation):
 def main():
     module = AnsibleModule(
             argument_spec       = dict(
-                state           = dict(default="present", choices=["present","absent"], required=False),
+                state           = dict(default="present", choices=["present","absent","latest"], required=False),
                 name            = dict(aliases=["pkg"], required=True),
                 cached          = dict(default=False, type='bool'),
                 annotation      = dict(default="", required=False),
@@ -286,6 +363,11 @@ def main():
 
     elif p["state"] == "absent":
         _changed, _msg = remove_packages(module, pkgng_path, pkgs)
+        changed = changed or _changed
+        msgs.append(_msg)
+
+    elif p["state"] == "latest":
+        _changed, _msg = upgrade_packages(module, pkgng_path, pkgs, p["cached"], p["pkgsite"])
         changed = changed or _changed
         msgs.append(_msg)
 
