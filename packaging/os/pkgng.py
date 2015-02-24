@@ -72,6 +72,12 @@ EXAMPLES = '''
 # Install package foo
 - pkgng: name=foo state=present
 
+# Upgrade one package
+- pkgng: name=foo state=latest
+
+# Upgrade all packages
+- pkgng: name=ALL state=latest
+
 # Annotate package foo and bar
 - pkgng: name=foo,bar annotation=+test1=baz,-test2,:test3=foobar
 
@@ -213,6 +219,7 @@ def pkg_basename(module, pkgng_path, package):
 # XXX packages is ignored as pkg version/upgrade do not deal with indiv. packages
 def update_packages(module, pkgng_path, packages, cached, pkgsite):
 
+    wanted = ""
     upgrade_c = 0
 
     # as of pkg-1.1.4, PACKAGESITE is deprecated in favor of repository definitions
@@ -235,8 +242,15 @@ def update_packages(module, pkgng_path, packages, cached, pkgsite):
         if rc != 0:
             module.fail_json(msg="Could not update catalogue")
 
+    if packages != "All":
+        wanted = packages
+
     # Get list of obsolete packages
     packages = outofdate_packages(module, pkgng_path, pkgsite)
+
+    # If upgrading just one single package
+    if wanted is in packages:
+        packages = [ wanted ]
 
     for package in packages:
         package = pkg_basename(package)
