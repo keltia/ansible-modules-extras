@@ -249,7 +249,7 @@ def update_packages(module, pkgng_path, packages, cached, pkgsite):
     packages = outofdate_packages(module, pkgng_path, pkgsite)
 
     # If upgrading just one single package
-    if wanted is in packages:
+    if wanted in packages:
         packages = [ wanted ]
 
     for package in packages:
